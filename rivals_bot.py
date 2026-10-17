@@ -99,7 +99,7 @@ DEFAULT_CONFIG = {
     "skill_icon_region": [0.868, 0.906, 0.8875, 0.9406],
     # Relic cleanup: every N finished matches, smelt all relics (0 = never). Before smelting,
     # the best relics are checked and legendaries with at least keep_min_s [S] stats are kept.
-    "cleanup_every": 20,
+    "cleanup_every": 8,
     "keep_min_s": 4,
     "keep_check_max": 8,
     "queue_timeout": 600,

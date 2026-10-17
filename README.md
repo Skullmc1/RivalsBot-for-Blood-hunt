@@ -7,7 +7,7 @@ During a match it switches Thor's **F** skill **on** the instant each wave start
 
 ## Relic cleanup
 
-Every 20 matches (`cleanup_every` in `config.json`, 0 = off) the bot goes to **Forge → Scrap** and smelts all relics, so you never hit the 2000 limit:
+Every 8 matches (`cleanup_every` in `config.json`, 0 = off) the bot goes to **Forge → Scrap** and smelts all relics, so you never hit the 2000 limit:
 
 1. SELECT ALL (locked relics are never selected).
 2. Checks the best relics first (the list is sorted best → worst): any **legendary** with **4+ [S] stats** (`keep_min_s`) is unticked and kept. It stops at the first relic that isn't a keeper.
