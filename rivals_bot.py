@@ -67,6 +67,8 @@ CAPTURE_STEPS = {
     # Relic cleanup (Forge > Scrap)
     "prepare_button":     ("The PLAY menu", "The PREPARE link above CHANGE MODE"),
     "forge_tab":          ("Blood Hunt > HERO screen", "The FORGE tab at the top (not selected)"),
+    "scrap_tab":          ("Forge > FORGE (another sub-tab open)", "The SCRAP sub-tab (white, not selected)"),
+    "scrap_tab_selected": ("Forge > SCRAP", "The SCRAP sub-tab (yellow, selected)"),
     "select_all":         ("Forge > SCRAP", "The SELECT ALL button"),
     "item_tick":          ("Forge > SCRAP after SELECT ALL", "The tick mark in a selected relic's corner"),
     "smelt_button":       ("Forge > SCRAP", "The SMELT button text"),
@@ -79,7 +81,7 @@ CAPTURE_STEPS = {
     "confirm_smelt":      ("The SMELT GEAR confirmation", "The CONFIRM button text"),
     "acquired":           ("After smelting", "The ACQUIRED title"),
 }
-CLEANUP_IMAGES = ["prepare_button", "forge_tab", "select_all", "item_tick", "smelt_button", "rating",
+CLEANUP_IMAGES = ["prepare_button", "forge_tab", "scrap_tab", "scrap_tab_selected", "select_all", "item_tick", "smelt_button", "rating",
                   "legendary", "stat_s", "smelt_dialog", "dont_show_unticked", "dont_show_ticked",
                   "confirm_smelt", "acquired"]
 OPTIONAL = {"mode_button", "bloodhunt_option", *CLEANUP_IMAGES}
@@ -292,10 +294,10 @@ class Game:
         user32.ClientToScreen(self.hwnd, ctypes.byref(pt))
         user32.SetCursorPos(pt.x, pt.y)
         try:
-            time.sleep(0.05)
+            time.sleep(0.1)
             self._fake_activate()
             self._post(WM_MOUSEMOVE, 0, lp)
-            time.sleep(0.05)
+            time.sleep(0.15)
             self._post(WM_LBUTTONDOWN, 0x0001, lp)
             time.sleep(0.08)
             self._post(WM_LBUTTONUP, 0, lp)
@@ -625,6 +627,26 @@ def is_ticked(screen, item_pos):
     return match_score("item_tick", area)[0] >= 0.85
 
 
+def click_until(pos, cfg, check, what, tries=4, settle=3.0):
+    """Click and wait until check(screen) is true; click again if the click didn't register."""
+    for attempt in range(tries):
+        if attempt:
+            log(f"{what}: the click didn't register - clicking again.")
+        click(pos, cfg)
+        end = time.time() + settle
+        while time.time() < end:
+            if check(game.frame()):
+                return True
+            sleep(0.2, cfg)
+    log(f"{what}: gave up after {tries} clicks.")
+    return False
+
+
+def visible(name, threshold=0.82):
+    """check() helper: True when the template is on screen."""
+    return lambda screen: match_score(name, screen)[0] >= threshold
+
+
 def leave_to_play_menu(cfg):
     for _ in range(4):
         press("esc", cfg)
@@ -634,8 +656,28 @@ def leave_to_play_menu(cfg):
     return False
 
 
+def open_scrap(cfg):
+    """Play menu -> PREPARE -> FORGE -> SCRAP. Returns the SELECT ALL position, or None."""
+    _, pos = wait_for("prepare_button", cfg, 10)
+    if not pos or not click_until(pos, cfg, visible("forge_tab"), "PREPARE", settle=4):
+        return None
+    _, pos = wait_for("forge_tab", cfg, 5)
+    # FORGE reopens whichever sub-tab was used last, so make sure SCRAP is the one showing.
+    if not pos or not click_until(pos, cfg, lambda sc: visible("scrap_tab")(sc) or visible("scrap_tab_selected")(sc)
+                                  or visible("select_all")(sc), "FORGE tab", settle=4):
+        return None
+    _, sel = wait_for("select_all", cfg, 2)
+    if not sel:
+        _, tab = wait_for(["scrap_tab", "scrap_tab_selected"], cfg, 3)
+        if not tab or not click_until(tab, cfg, visible("select_all"), "SCRAP tab", settle=4):
+            return None
+        _, sel = wait_for("select_all", cfg, 3)
+    return sel
+
+
 def cleanup_relics(cfg, dry_run=False):
-    """Forge > Scrap: select all relics, untick the rare legendaries, smelt the rest."""
+    """Forge > Scrap: select all relics, untick the rare legendaries, smelt the rest.
+    Every click is checked (the game sometimes drops one) and retried."""
     missing = [n for n in CLEANUP_IMAGES if not has_template(n)]
     if missing:
         log("Can't clean up relics - missing images: " + ", ".join(missing))
@@ -643,16 +685,9 @@ def cleanup_relics(cfg, dry_run=False):
     log("Relic cleanup: opening Forge > Scrap...")
     if not locate("play_menu", cfg) and not ensure_play_menu(cfg):
         return False
-    if not click_until_gone("prepare_button", cfg, 10):
-        log("Couldn't open PREPARE.")
-        return False
-    if not click_when_visible("forge_tab", cfg, 15):
-        log("Couldn't find the FORGE tab.")
-        leave_to_play_menu(cfg)
-        return False
-    _, sel_pos = wait_for("select_all", cfg, 15)
+    sel_pos = open_scrap(cfg)
     if not sel_pos:
-        log("The scrap screen didn't open.")
+        log("Couldn't open Forge > Scrap.")
         leave_to_play_menu(cfg)
         return False
     sleep(1, cfg)
@@ -661,9 +696,7 @@ def cleanup_relics(cfg, dry_run=False):
     sx, sy = sel_pos
     items = [(sx - 91 + 170 * (i % 4), sy - 874 + 170 * (i // 4)) for i in range(cfg["keep_check_max"])]
 
-    click(sel_pos, cfg)
-    sleep(1, cfg)
-    if not is_ticked(game.frame(), items[0]):
+    if not click_until(sel_pos, cfg, lambda sc: is_ticked(sc, items[0]), "SELECT ALL", tries=3):
         log("Nothing to smelt (no unlocked relics).")
         return leave_to_play_menu(cfg)
 
@@ -679,34 +712,41 @@ def cleanup_relics(cfg, dry_run=False):
             f"{' - KEEPING' if keep else ''}.")
         if not keep:
             break
-        click(pos, cfg)
-        sleep(0.6, cfg)
-        if is_ticked(game.frame(), pos):
-            log(f"Couldn't untick relic #{i + 1} - aborting cleanup so it isn't smelted.")
-            click(sel_pos, cfg)  # DESELECT ALL
+        if not click_until(pos, cfg, lambda sc, p=pos: not is_ticked(sc, p), f"Untick relic #{i + 1}"):
+            log("Aborting the cleanup so the keeper isn't smelted.")
+            click_until(sel_pos, cfg, lambda sc: not is_ticked(sc, items[0]), "DESELECT ALL")
             leave_to_play_menu(cfg)
             return False
         kept += 1
 
     if dry_run:
         log(f"Dry run: would keep {kept} relic(s) and smelt the rest. Deselecting and leaving.")
-        click(sel_pos, cfg)
+        click_until(sel_pos, cfg, lambda sc: not is_ticked(sc, items[0]), "DESELECT ALL")
         return leave_to_play_menu(cfg)
 
     log(f"Smelting everything else (keeping {kept}).")
-    click_when_visible("smelt_button", cfg, 5)
-    name, _ = wait_for(["smelt_dialog", "acquired"], cfg, 10)
-    if name == "smelt_dialog":
-        if match_score("dont_show_ticked", game.frame())[0] < 0.95:
-            _, box = wait_for("dont_show_unticked", cfg, 3)
-            if box:
-                click(box, cfg)  # don't ask again today
-        click_when_visible("confirm_smelt", cfg, 5)
-        name, _ = wait_for("acquired", cfg, 15)
-    if name != "acquired":
-        log("Smelting didn't seem to finish.")
+    _, smelt_pos = wait_for("smelt_button", cfg, 5)
+    if not smelt_pos or not click_until(smelt_pos, cfg, lambda sc: visible("smelt_dialog")(sc)
+                                        or visible("acquired")(sc), "SMELT", settle=4):
         leave_to_play_menu(cfg)
         return False
+
+    if locate("smelt_dialog", cfg):
+        # The "don't show again today" box sits at a fixed spot below the dialog title.
+        tx, ty = locate("smelt_dialog", cfg)
+        box = (tx - 189, ty + 639)
+
+        def box_ticked(sc):
+            area = sc[box[1] - 30:box[1] + 30, box[0] - 30:box[0] + 30]
+            return match_score("dont_show_ticked", area)[0] > match_score("dont_show_unticked", area)[0]
+
+        if not box_ticked(game.frame()):
+            click_until(box, cfg, box_ticked, "Don't show again today", tries=3, settle=2)
+        _, confirm = wait_for("confirm_smelt", cfg, 5)
+        if not confirm or not click_until(confirm, cfg, visible("acquired"), "CONFIRM", settle=6):
+            leave_to_play_menu(cfg)
+            return False
+
     log("Smelted.")
     for _ in range(5):
         press("space", cfg)
