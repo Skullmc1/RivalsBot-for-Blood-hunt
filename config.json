@@ -1,0 +1,23 @@
+{
+  "process_names": [
+    "Marvel-Win64-Shipping.exe"
+  ],
+  "input_mode": "background",
+  "match_threshold": 0.82,
+  "skill_key": "f",
+  "wave_on": 0.75,
+  "wave_off": 0.6,
+  "wave_gone_time": 0.4,
+  "skill_verify_time": 1.5,
+  "skill_icon_region": [
+    0.868,
+    0.906,
+    0.8875,
+    0.9406
+  ],
+  "queue_timeout": 600,
+  "hero_select_timeout": 90,
+  "match_timeout": 3600,
+  "poll_interval": 0.25,
+  "stop_key_vk": 119
+}
