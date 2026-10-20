@@ -70,19 +70,16 @@ CAPTURE_STEPS = {
     "scrap_tab":          ("Forge > FORGE (another sub-tab open)", "The SCRAP sub-tab (white, not selected)"),
     "scrap_tab_selected": ("Forge > SCRAP", "The SCRAP sub-tab (yellow, selected)"),
     "select_all":         ("Forge > SCRAP", "The SELECT ALL button"),
-    "item_tick":          ("Forge > SCRAP after SELECT ALL", "The tick mark in a selected relic's corner"),
+    "deselect_all":       ("Forge > SCRAP after SELECT ALL", "The DESELECT ALL button"),
     "smelt_button":       ("Forge > SCRAP", "The SMELT button text"),
-    "rating":             ("Forge > SCRAP, hovering a relic", "The word RATING in the tooltip"),
-    "legendary":          ("Forge > SCRAP, hovering a legendary relic", "The word LEGENDARY under the name"),
-    "stat_s":             ("Forge > SCRAP, hovering a relic", "One [S] tag of an extended effect"),
     "smelt_dialog":       ("The SMELT GEAR confirmation", "The SMELT GEAR title"),
     "dont_show_unticked": ("The SMELT GEAR confirmation", "The empty DON'T SHOW AGAIN TODAY box"),
     "dont_show_ticked":   ("The SMELT GEAR confirmation", "The ticked DON'T SHOW AGAIN TODAY box"),
     "confirm_smelt":      ("The SMELT GEAR confirmation", "The CONFIRM button text"),
     "acquired":           ("After smelting", "The ACQUIRED title"),
 }
-CLEANUP_IMAGES = ["prepare_button", "forge_tab", "scrap_tab", "scrap_tab_selected", "select_all", "item_tick", "smelt_button", "rating",
-                  "legendary", "stat_s", "smelt_dialog", "dont_show_unticked", "dont_show_ticked",
+CLEANUP_IMAGES = ["prepare_button", "forge_tab", "scrap_tab", "scrap_tab_selected", "select_all", "deselect_all",
+                  "smelt_button", "smelt_dialog", "dont_show_unticked", "dont_show_ticked",
                   "confirm_smelt", "acquired"]
 OPTIONAL = {"mode_button", "bloodhunt_option", *CLEANUP_IMAGES}
 
@@ -96,14 +93,11 @@ DEFAULT_CONFIG = {
     "wave_on": 0.75,         # countdown counts as showing above this score
     "wave_off": 0.6,         # ...and as gone below this
     "wave_gone_time": 0.4,   # seconds it must stay gone before pressing
-    "skill_verify_time": 1.5,  # after pressing, wait this long for the icon to light up
+    "skill_verify_time": 2.5,  # after pressing, wait this long for the icon to light up
     # Where the skill (F) icon is, as fractions of the game window (x1, y1, x2, y2).
     "skill_icon_region": [0.868, 0.906, 0.8875, 0.9406],
-    # Relic cleanup: every N finished matches, smelt all relics (0 = never). Before smelting,
-    # the best relics are checked and legendaries with at least keep_min_s [S] stats are kept.
+    # Relic cleanup: every N finished matches, smelt all (unlocked) relics. 0 = never.
     "cleanup_every": 8,
-    "keep_min_s": 4,
-    "keep_check_max": 8,
     "queue_timeout": 600,
     "hero_select_timeout": 90,
     "match_timeout": 3600,
@@ -317,26 +311,6 @@ class Game:
         self._post(WM_KEYDOWN, vk, 1 | (scan << 16))
         time.sleep(0.08)
         self._post(WM_KEYUP, vk, 1 | (scan << 16) | (0xC0 << 24))
-
-    def hover(self, pos, hold=1.0):
-        """Rest the mouse on a spot (e.g. to show a tooltip) and return a picture of it."""
-        ox, oy = self._client_offset()
-        x, y = pos[0] - ox, pos[1] - oy
-        old = wintypes.POINT()
-        user32.GetCursorPos(ctypes.byref(old))
-        pt = wintypes.POINT(x, y)
-        user32.ClientToScreen(self.hwnd, ctypes.byref(pt))
-        user32.SetCursorPos(pt.x, pt.y)
-        try:
-            if self.cfg["input_mode"] != "foreground":
-                self._fake_activate()
-                self._post(WM_MOUSEMOVE, 0, ((y & 0xFFFF) << 16) | (x & 0xFFFF))
-            time.sleep(hold)
-            return self.frame().copy()
-        finally:
-            if self.cfg["input_mode"] != "foreground":
-                user32.SetCursorPos(old.x, old.y)
-
 
 def open_game(cfg):
     pid = find_game_pid(cfg)
@@ -596,37 +570,6 @@ def clear_end_screens(cfg):
 
 # ---------------------------------------------------------------- relic cleanup
 
-def find_all(name, screen, threshold):
-    """All (x, y) top-left positions where a template matches, without near-duplicates."""
-    tpl = template(name)
-    res = cv2.matchTemplate(screen, tpl, cv2.TM_CCOEFF_NORMED)
-    ys, xs = np.where(res >= threshold)
-    found = []
-    for x, y in sorted(zip(xs, ys), key=lambda p: -res[p[1], p[0]]):
-        if all(abs(x - fx) > 20 or abs(y - fy) > 15 for fx, fy in found):
-            found.append((int(x), int(y)))
-    return found
-
-
-def read_relic(screen):
-    """Read the hovered relic's tooltip: (is_legendary, number of [S] stats), or None.
-    The hovered relic's tooltip is the leftmost one (the equipped relic is shown to its right)."""
-    ratings = find_all("rating", screen, 0.9)
-    if not ratings:
-        return None
-    px, py = min(ratings)
-    legendary = any(abs(x - px) < 25 and py - 100 < y < py for x, y in find_all("legendary", screen, 0.85))
-    s_count = sum(1 for x, y in find_all("stat_s", screen, 0.8) if px - 15 <= x <= px + 50 and y > py)
-    return legendary, s_count
-
-
-def is_ticked(screen, item_pos):
-    """True if the relic at item_pos has the selection tick in its top-right corner."""
-    x, y = item_pos
-    area = screen[max(0, y - 90):y + 10, x:x + 110]
-    return match_score("item_tick", area)[0] >= 0.85
-
-
 def click_until(pos, cfg, check, what, tries=4, settle=3.0):
     """Click and wait until check(screen) is true; click again if the click didn't register."""
     for attempt in range(tries):
@@ -675,8 +618,8 @@ def open_scrap(cfg):
     return sel
 
 
-def cleanup_relics(cfg, dry_run=False):
-    """Forge > Scrap: select all relics, untick the rare legendaries, smelt the rest.
+def cleanup_relics(cfg):
+    """Forge > Scrap: SELECT ALL, SMELT, confirm. Locked relics are never selected by the game.
     Every click is checked (the game sometimes drops one) and retried."""
     missing = [n for n in CLEANUP_IMAGES if not has_template(n)]
     if missing:
@@ -692,39 +635,14 @@ def cleanup_relics(cfg, dry_run=False):
         return False
     sleep(1, cfg)
 
-    # Relic grid: 4 per row, sorted best first. Positions relative to SELECT ALL.
-    sx, sy = sel_pos
-    items = [(sx - 91 + 170 * (i % 4), sy - 874 + 170 * (i // 4)) for i in range(cfg["keep_check_max"])]
-
-    if not click_until(sel_pos, cfg, lambda sc: is_ticked(sc, items[0]), "SELECT ALL", tries=3):
+    # Once relics are selected the button reads DESELECT ALL. (Don't look for ticks on the
+    # first relics: locked/equipped relics come first and never get selected.)
+    selected = visible("deselect_all", 0.92)
+    if not selected(game.frame()) and not click_until(sel_pos, cfg, selected, "SELECT ALL", tries=2):
         log("Nothing to smelt (no unlocked relics).")
         return leave_to_play_menu(cfg)
 
-    kept = 0
-    for i, pos in enumerate(items):
-        info = read_relic(game.hover(pos))
-        if info is None:
-            log(f"Relic #{i + 1}: couldn't read its stats - stopping the check here.")
-            break
-        legendary, s_count = info
-        keep = legendary and s_count >= cfg["keep_min_s"]
-        log(f"Relic #{i + 1}: {'legendary' if legendary else 'not legendary'}, {s_count} S-tier stats"
-            f"{' - KEEPING' if keep else ''}.")
-        if not keep:
-            break
-        if not click_until(pos, cfg, lambda sc, p=pos: not is_ticked(sc, p), f"Untick relic #{i + 1}"):
-            log("Aborting the cleanup so the keeper isn't smelted.")
-            click_until(sel_pos, cfg, lambda sc: not is_ticked(sc, items[0]), "DESELECT ALL")
-            leave_to_play_menu(cfg)
-            return False
-        kept += 1
-
-    if dry_run:
-        log(f"Dry run: would keep {kept} relic(s) and smelt the rest. Deselecting and leaving.")
-        click_until(sel_pos, cfg, lambda sc: not is_ticked(sc, items[0]), "DESELECT ALL")
-        return leave_to_play_menu(cfg)
-
-    log(f"Smelting everything else (keeping {kept}).")
+    log("Smelting all relics...")
     _, smelt_pos = wait_for("smelt_button", cfg, 5)
     if not smelt_pos or not click_until(smelt_pos, cfg, lambda sc: visible("smelt_dialog")(sc)
                                         or visible("acquired")(sc), "SMELT", settle=4):
@@ -771,6 +689,8 @@ def cmd_run(args):
         log("Capture them with:  python rivals_bot.py capture")
         return 1
 
+    if args.cleanup_every is not None:
+        cfg["cleanup_every"] = args.cleanup_every
     game = open_game(cfg)
     if not game:
         return 1
@@ -819,7 +739,7 @@ def cmd_cleanup(args):
     if not game:
         return 1
     try:
-        return 0 if cleanup_relics(cfg, dry_run=args.dry_run) else 1
+        return 0 if cleanup_relics(cfg) else 1
     except StopBot:
         log("F8 pressed - stopped.")
         return 1
@@ -991,6 +911,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd")
     r = sub.add_parser("run", help="start the bot")
     r.add_argument("--games", type=int, default=0, help="stop after N matches (0 = forever)")
+    r.add_argument("--cleanup-every", type=int, help="smelt relics every N matches (overrides config.json)")
     c = sub.add_parser("capture", help="capture images (guided if no name is given)")
     c.add_argument("name", nargs="?", help="capture just this one image")
     c.add_argument("--all", action="store_true", help="guided mode: redo every image")
@@ -999,8 +920,7 @@ def main():
     k.add_argument("--delay", type=int, default=0)
     sub.add_parser("list", help="list images")
     sub.add_parser("test-input", help="check the game accepts background clicks/keys")
-    cl = sub.add_parser("cleanup", help="smelt relics now, keeping rare legendaries (start on the play menu)")
-    cl.add_argument("--dry-run", action="store_true", help="only show what would be kept, don't smelt")
+    sub.add_parser("cleanup", help="smelt all unlocked relics now (start on the play menu)")
     double_clicked = len(sys.argv) == 1
     args = ap.parse_args(sys.argv[1:] or ["run"])  # no arguments = start the bot
     commands = {"run": cmd_run, "capture": cmd_capture, "check": cmd_check,

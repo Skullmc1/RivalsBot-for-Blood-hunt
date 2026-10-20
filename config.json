@@ -8,7 +8,7 @@
   "wave_on": 0.75,
   "wave_off": 0.6,
   "wave_gone_time": 0.4,
-  "skill_verify_time": 1.5,
+  "skill_verify_time": 2.5,
   "skill_icon_region": [
     0.868,
     0.906,
@@ -16,8 +16,6 @@
     0.9406
   ],
   "cleanup_every": 8,
-  "keep_min_s": 4,
-  "keep_check_max": 8,
   "queue_timeout": 600,
   "hero_select_timeout": 90,
   "match_timeout": 3600,
